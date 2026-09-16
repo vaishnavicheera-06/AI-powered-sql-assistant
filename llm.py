@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 def generate_sql(user_question, schema):
     prompt = f"""You are an expert SQL assistant.
@@ -24,7 +25,7 @@ User Question: {user_question}
 
 SQL Query:"""
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -60,7 +61,7 @@ Error: {error}
 
 Fixed SQL:"""
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
@@ -86,7 +87,7 @@ Result: {result_df.to_string()}
 
 Give a 2-3 line simple insight from this result in plain English."""
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
@@ -101,7 +102,7 @@ SQL Query:
 
 Explanation:"""
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
