@@ -121,3 +121,36 @@ def load_csv_to_db(df, table_name):
         conn.close()
     except Exception as e:
         print(f"Error loading CSV: {e}")
+
+
+HARD_BLOCK = r"\b(drop\s+(database|schema|role|user)|alter\s+(role|user|database)|grant|revoke|copy|create\s+(role|user|extension))\b"
+
+
+def is_confirmable(sql: str):
+    cleaned = re.sub(r"--.*?$|/\*.*?\*/", "", sql, flags=re.S | re.M).strip()
+    if not cleaned:
+        return False
+    return not re.search(HARD_BLOCK, cleaned, re.I)
+
+
+def run_any_query(sql):
+    """Runs any SQL type. Only called after the user clicks Confirm."""
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        if cursor.description:
+            df = pd.DataFrame(cursor.fetchall(), columns=[d[0] for d in cursor.description])
+        else:
+            n = cursor.rowcount
+            msg = "Query executed successfully ✅" if n < 0 else f"Query executed successfully ✅ ({n} rows affected)"
+            df = pd.DataFrame([{"message": msg}])
+        conn.commit()
+        cursor.close()
+        return df, None
+    except Exception as e:
+        return None, str(e)
+    finally:
+        if conn:
+            conn.close()
