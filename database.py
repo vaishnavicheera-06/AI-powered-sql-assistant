@@ -1,9 +1,22 @@
+import re
 import psycopg2
 import pandas as pd
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+BLOCKED = r"\b(drop|delete|update|insert|alter|truncate|create|grant|revoke|copy)\b"
+
+def is_safe_query(sql: str):
+    cleaned = re.sub(r"--.*?$|/\*.*?\*/", "", sql, flags=re.S | re.M).strip().rstrip(";").strip()
+    if ";" in cleaned:
+        return False, "Multiple statements are not allowed."
+    if not re.match(r"^(select|with)\b", cleaned, re.I):
+        return False, "Only SELECT queries are allowed."
+    if re.search(BLOCKED, cleaned, re.I):
+        return False, "Query contains a blocked keyword."
+    return True, "OK"
 
 def get_connection():
     conn = psycopg2.connect(
@@ -62,16 +75,12 @@ def init_db():
         print(f"❌ Database error: {e}")
 
 def run_query(sql):
+    ok, msg = is_safe_query(sql)
+    if not ok:
+        return None, f"🚫 Blocked for safety: {msg}"
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        if sql.strip().upper().startswith('SELECT'):
-            df = pd.read_sql_query(sql, conn)
-        else:
-            cursor.execute(sql)
-            conn.commit()
-            df = pd.DataFrame([{"message": "Query executed successfully ✅"}])
-        cursor.close()
+        df = pd.read_sql_query(sql, conn)
         conn.close()
         return df, None
     except Exception as e:
