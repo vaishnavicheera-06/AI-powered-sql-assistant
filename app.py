@@ -91,6 +91,28 @@ def clear_text():
     st.session_state.query_input = ""
 
 
+def reset_conversation():
+    st.session_state.history = []
+    st.session_state.query_input = ""
+
+
+def build_contextual_question(question):
+    """Adds the last 2 successful questions + SQL so follow-ups work."""
+    recent = st.session_state.history[-2:]
+    if not recent:
+        return question
+    context = "\n".join(
+        f"- Earlier question: {h['question']}\n  Earlier SQL: {h['sql']}"
+        for h in recent
+    )
+    return f"""Conversation so far:
+{context}
+
+If the new question refers to earlier results (words like "them", "those", "it", "only", "also", "sort them", "now"), modify the most recent SQL to answer it. If it is a completely new question, ignore the conversation.
+
+New question: {question}"""
+
+
 # Hero
 st.markdown("""
 <div class="hero">
@@ -127,6 +149,10 @@ with st.sidebar:
         st.markdown(f"• *{ex}*")
 
     st.markdown("---")
+    st.markdown("### 💬 Follow-up Questions")
+    st.caption("After a query, ask things like: 'only those above 50000' or 'sort them highest to lowest'.")
+    st.button("🆕 New conversation", key="reset_btn", on_click=reset_conversation)
+
     if st.session_state.history:
         st.markdown("### 🕐 Query History")
         for i, item in enumerate(reversed(st.session_state.history[-5:])):
@@ -158,9 +184,11 @@ with tab1:
         if user_question.strip() == "":
             st.warning("Please enter a question.")
         else:
+            contextual_question = build_contextual_question(user_question)
+
             with st.spinner("🤖 Generating SQL..."):
                 schema = get_schema()
-                sql = generate_sql(user_question, schema)
+                sql = generate_sql(contextual_question, schema)
 
             st.markdown('<div class="card"><div class="card-title">⚡ Generated SQL</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
@@ -174,7 +202,7 @@ with tab1:
             else:
                 if error:
                     with st.spinner("🔧 Auto-fixing SQL..."):
-                        sql = fix_sql(user_question, schema, sql, error)
+                        sql = fix_sql(contextual_question, schema, sql, error)
                     st.markdown('<div class="card"><div class="card-title">🔧 Fixed SQL</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
