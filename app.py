@@ -1,7 +1,13 @@
+import html
+import datetime
+import decimal
 import streamlit as st
 import pandas as pd
-from database import init_db, run_query, run_any_query, is_confirmable, get_schema, load_csv_to_db
-from llm import generate_sql, fix_sql, generate_insight, explain_sql
+from database import (
+    init_db, run_query, run_any_query, is_confirmable,
+    is_safe_query, get_schema, load_csv_to_db
+)
+from llm import generate_sql, fix_sql, generate_insight, explain_sql, explain_query_short
 
 init_db()
 
@@ -42,6 +48,7 @@ st.markdown("""
         border: 1px solid #2d4a7a; border-left: 3px solid #48C9B0;
         border-radius: 8px; padding: 1rem 1.5rem;
         color: #cbd5e1; font-size: 0.95rem; line-height: 1.6;
+        white-space: pre-wrap;
     }
     .explain-box {
         background: linear-gradient(135deg, #1a2a1a, #1e2130);
@@ -119,6 +126,113 @@ If the new question refers to earlier results (words like "them", "those", "it",
 New question: {question}"""
 
 
+def show_query_explanation(sql):
+    """Short plain-English explanation + read-only badge under the generated SQL."""
+    with st.spinner("📝 Explaining query..."):
+        text = explain_query_short(sql)
+    if text:
+        st.markdown(f'''
+        <div class="card">
+            <div class="card-title">📝 What this query does</div>
+            <div class="insight-box">{html.escape(text)}</div>
+        </div>
+        ''', unsafe_allow_html=True)
+    safe, _ = is_safe_query(sql)
+    if safe:
+        st.success("🔒 Read-only query — safe to execute")
+
+
+def chart_title(text):
+    st.markdown(f'<div class="card"><div class="card-title">{text}</div></div>', unsafe_allow_html=True)
+
+
+def prepare_for_chart(df):
+    """Postgres AVG/SUM often return Decimal; convert those columns to float for charting."""
+    d = df.copy()
+    for c in d.columns:
+        if pd.api.types.is_object_dtype(d[c]):
+            vals = d[c].dropna()
+            if len(vals) > 0 and all(isinstance(v, decimal.Decimal) for v in vals):
+                d[c] = d[c].astype(float)
+    return d
+
+
+def is_date_col(series):
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return True
+    vals = series.dropna()
+    return len(vals) > 0 and all(isinstance(v, datetime.date) for v in vals)
+
+
+def show_smart_chart(df):
+    """Chooses the visualization from the shape of the result."""
+    if df.empty:
+        return
+    d = prepare_for_chart(df)
+    n_rows, n_cols = d.shape
+
+    # numeric columns, ignoring id columns
+    num_cols = [
+        c for c in d.select_dtypes(include="number").columns
+        if not (str(c).lower() == "id" or str(c).lower().endswith("_id"))
+    ]
+    if not num_cols:
+        return
+
+    # Single number -> KPI card
+    if n_rows == 1 and n_cols == 1:
+        val = d.iloc[0, 0]
+        try:
+            f = float(val)
+            text = f"{f:,.0f}" if f.is_integer() else f"{f:,.2f}"
+        except (TypeError, ValueError):
+            text = str(val)
+        chart_title("🔢 Key figure")
+        st.metric(label=str(d.columns[0]), value=text)
+        return
+
+    # Single row with several values -> the table is enough
+    if n_rows == 1:
+        return
+
+    if n_rows > 50:
+        st.caption("📊 Chart skipped: too many rows to show clearly.")
+        return
+
+    date_cols = [c for c in d.columns if is_date_col(d[c])]
+    time_like = [
+        c for c in num_cols
+        if any(k in str(c).lower() for k in ("month", "year", "week", "day"))
+    ]
+    text_cols = [
+        c for c in d.columns
+        if c not in date_cols and not pd.api.types.is_numeric_dtype(d[c])
+    ]
+
+    try:
+        if date_cols:
+            x = date_cols[0]
+            d[x] = pd.to_datetime(d[x])
+            chart_df = d.sort_values(x).set_index(x)[num_cols]
+            chart_title("📈 Line chart · trend over time")
+            st.line_chart(chart_df, use_container_width=True)
+        elif time_like:
+            x = time_like[0]
+            y = [c for c in num_cols if c != x]
+            if not y:
+                return
+            chart_df = d.sort_values(x).set_index(x)[y]
+            chart_title("📈 Line chart · trend over time")
+            st.line_chart(chart_df, use_container_width=True)
+        elif text_cols:
+            x = text_cols[0]
+            chart_df = d.set_index(x)[num_cols]
+            chart_title("📊 Bar chart · comparison")
+            st.bar_chart(chart_df, use_container_width=True)
+    except Exception:
+        pass
+
+
 # Hero
 st.markdown("""
 <div class="hero">
@@ -162,9 +276,9 @@ with st.sidebar:
     if st.session_state.history:
         st.markdown("### 🕐 Query History")
         for i, item in enumerate(reversed(st.session_state.history[-5:])):
-            st.markdown(f'<div class="history-item">❓ {item["question"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="history-item">❓ {html.escape(item["question"])}</div>', unsafe_allow_html=True)
 
-    st.caption("Built with Streamlit + Groq LLaMA3 + PostgreSQL (Supabase)")
+    st.caption("Built with Streamlit + Groq + PostgreSQL (Supabase)")
 
 # Tabs
 tab1, tab2 = st.tabs(["🔍 Query Database", "📖 Explain SQL"])
@@ -200,8 +314,10 @@ with tab1:
                 sql = generate_sql(contextual_question, schema)
 
             st.markdown('<div class="card"><div class="card-title">⚡ Generated SQL</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sql-box">{html.escape(sql)}</div>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
+
+            show_query_explanation(sql)
 
             df, error = run_query(sql)
 
@@ -216,7 +332,7 @@ with tab1:
                     with st.spinner("🔧 Auto-fixing SQL..."):
                         sql = fix_sql(contextual_question, schema, sql, error)
                     st.markdown('<div class="card"><div class="card-title">🔧 Fixed SQL</div>', unsafe_allow_html=True)
-                    st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="sql-box">{html.escape(sql)}</div>', unsafe_allow_html=True)
                     st.markdown('</div>', unsafe_allow_html=True)
                     df, error = run_query(sql)
 
@@ -240,23 +356,14 @@ with tab1:
                         mime="text/csv"
                     )
 
-                    if not df.empty:
-                        numeric_cols = df.select_dtypes(include='number').columns.tolist()
-                        non_numeric_cols = df.select_dtypes(exclude='number').columns.tolist()
-                        if len(numeric_cols) > 0 and len(non_numeric_cols) > 0:
-                            st.markdown('<div class="card"><div class="card-title">📈 Chart</div></div>', unsafe_allow_html=True)
-                            try:
-                                chart_df = df.set_index(non_numeric_cols[0])[numeric_cols]
-                                st.bar_chart(chart_df, use_container_width=True)
-                            except Exception:
-                                pass
+                    show_smart_chart(df)
 
                     with st.spinner("💡 Generating insight..."):
                         insight = generate_insight(user_question, sql, df)
                     st.markdown(f'''
                     <div class="card">
                         <div class="card-title">💡 AI Insight</div>
-                        <div class="insight-box">{insight}</div>
+                        <div class="insight-box">{html.escape(insight)}</div>
                     </div>
                     ''', unsafe_allow_html=True)
 
