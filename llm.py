@@ -107,3 +107,22 @@ Explanation:"""
         temperature=0.3
     )
     return response.choices[0].message.content.strip()
+
+def explain_query_short(sql):
+    """One or two short sentences, shown under every generated query."""
+    prompt = f"""Explain what this SQL query does in ONE or TWO short sentences, in plain English for a non-technical person.
+Do not use SQL jargon. Do not repeat the SQL. No markdown, no bullet points.
+
+SQL Query:
+{sql}
+
+Explanation:"""
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception:
+        return ""
