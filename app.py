@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from database import init_db, run_query, get_schema, load_csv_to_db
+from database import init_db, run_query, run_any_query, is_confirmable, get_schema, load_csv_to_db
 from llm import generate_sql, fix_sql, generate_insight, explain_sql
 
 init_db()
@@ -85,6 +85,10 @@ if "history" not in st.session_state:
     st.session_state.history = []
 if "query_input" not in st.session_state:
     st.session_state.query_input = ""
+if "pending_sql" not in st.session_state:
+    st.session_state.pending_sql = None
+if "write_result" not in st.session_state:
+    st.session_state.write_result = None
 
 
 def clear_text():
@@ -94,6 +98,8 @@ def clear_text():
 def reset_conversation():
     st.session_state.history = []
     st.session_state.query_input = ""
+    st.session_state.pending_sql = None
+    st.session_state.write_result = None
 
 
 def build_contextual_question(question):
@@ -181,6 +187,9 @@ with tab1:
         st.markdown('</div>', unsafe_allow_html=True)
 
     if run:
+        st.session_state.pending_sql = None
+        st.session_state.write_result = None
+
         if user_question.strip() == "":
             st.warning("Please enter a question.")
         else:
@@ -196,9 +205,12 @@ with tab1:
 
             df, error = run_query(sql)
 
-            # Blocked for safety: do not send to auto-fix
+            # Not a SELECT: ask the user to confirm before running it
             if error and error.startswith("🚫"):
-                st.error(error)
+                if is_confirmable(sql):
+                    st.session_state.pending_sql = sql
+                else:
+                    st.error("🚫 This command is not allowed for security reasons.")
             else:
                 if error:
                     with st.spinner("🔧 Auto-fixing SQL..."):
@@ -252,6 +264,33 @@ with tab1:
                         "question": user_question,
                         "sql": sql
                     })
+
+    # Confirmation step for queries that change data or structure
+    if st.session_state.pending_sql:
+        st.warning("⚠️ This query will change your database. Review it, then confirm to run it.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("✅ Confirm & execute", key="confirm_btn"):
+                df_w, err_w = run_any_query(st.session_state.pending_sql)
+                st.session_state.write_result = (df_w, err_w)
+                st.session_state.history.append({
+                    "question": user_question,
+                    "sql": st.session_state.pending_sql
+                })
+                st.session_state.pending_sql = None
+                st.rerun()
+        with c2:
+            if st.button("❌ Cancel", key="cancel_btn"):
+                st.session_state.pending_sql = None
+                st.rerun()
+
+    if st.session_state.write_result:
+        df_w, err_w = st.session_state.write_result
+        if err_w:
+            st.error(f"❌ {err_w}")
+        else:
+            st.success("✅ Query executed.")
+            st.dataframe(df_w, use_container_width=True)
 
 # Tab 2 — Explain SQL
 with tab2:
