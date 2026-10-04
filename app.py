@@ -83,8 +83,13 @@ st.markdown("""
 # Session state
 if "history" not in st.session_state:
     st.session_state.history = []
-if "clear_input" not in st.session_state:
-    st.session_state.clear_input = False
+if "query_input" not in st.session_state:
+    st.session_state.query_input = ""
+
+
+def clear_text():
+    st.session_state.query_input = ""
+
 
 # Hero
 st.markdown("""
@@ -127,7 +132,7 @@ with st.sidebar:
         for i, item in enumerate(reversed(st.session_state.history[-5:])):
             st.markdown(f'<div class="history-item">❓ {item["question"]}</div>', unsafe_allow_html=True)
 
-    st.caption("Built with Streamlit + Groq LLaMA3 + SQLite")
+    st.caption("Built with Streamlit + Groq LLaMA3 + PostgreSQL (Supabase)")
 
 # Tabs
 tab1, tab2 = st.tabs(["🔍 Query Database", "📖 Explain SQL"])
@@ -136,25 +141,18 @@ tab1, tab2 = st.tabs(["🔍 Query Database", "📖 Explain SQL"])
 with tab1:
     col1, col2, col3 = st.columns([5, 1, 1])
     with col1:
-        default_val = "" if st.session_state.clear_input else None
         user_question = st.text_input(
             "",
             placeholder="e.g. Show employees with salary above 70000 ordered by department",
             label_visibility="collapsed",
-            key="query_input",
-            value="" if st.session_state.clear_input else st.session_state.get("query_input", "")
+            key="query_input"
         )
-        st.session_state.clear_input = False
     with col2:
         run = st.button("▶ Run", key="run_btn")
     with col3:
         st.markdown('<div class="clear-btn">', unsafe_allow_html=True)
-        clear = st.button("🗑️ Clear", key="clear_btn")
+        st.button("🗑️ Clear", key="clear_btn", on_click=clear_text)
         st.markdown('</div>', unsafe_allow_html=True)
-
-    if clear:
-        st.session_state.clear_input = True
-        st.rerun()
 
     if run:
         if user_question.strip() == "":
@@ -170,58 +168,62 @@ with tab1:
 
             df, error = run_query(sql)
 
-            if error:
-                with st.spinner("🔧 Auto-fixing SQL..."):
-                    sql = fix_sql(user_question, schema, sql, error)
-                st.markdown('<div class="card"><div class="card-title">🔧 Fixed SQL</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-                df, error = run_query(sql)
-
-            if error:
-                st.error(f"❌ Could not fix query: {error}")
+            # Blocked for safety: do not send to auto-fix
+            if error and error.startswith("🚫"):
+                st.error(error)
             else:
-                rows, cols_count = df.shape
-                st.markdown(f'''
-                <div class="card">
-                    <div class="card-title">📊 Query Results</div>
-                    <span class="stat-chip">{rows} rows</span>
-                    <span class="stat-chip">{cols_count} columns</span>
-                </div>
-                ''', unsafe_allow_html=True)
-                st.dataframe(df, use_container_width=True)
+                if error:
+                    with st.spinner("🔧 Auto-fixing SQL..."):
+                        sql = fix_sql(user_question, schema, sql, error)
+                    st.markdown('<div class="card"><div class="card-title">🔧 Fixed SQL</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
+                    st.markdown('</div>', unsafe_allow_html=True)
+                    df, error = run_query(sql)
 
-                st.download_button(
-                    label="⬇️ Download Results as CSV",
-                    data=df.to_csv(index=False),
-                    file_name="query_results.csv",
-                    mime="text/csv"
-                )
+                if error:
+                    st.error(f"❌ Could not fix query: {error}")
+                else:
+                    rows, cols_count = df.shape
+                    st.markdown(f'''
+                    <div class="card">
+                        <div class="card-title">📊 Query Results</div>
+                        <span class="stat-chip">{rows} rows</span>
+                        <span class="stat-chip">{cols_count} columns</span>
+                    </div>
+                    ''', unsafe_allow_html=True)
+                    st.dataframe(df, use_container_width=True)
 
-                if not df.empty:
-                    numeric_cols = df.select_dtypes(include='number').columns.tolist()
-                    non_numeric_cols = df.select_dtypes(exclude='number').columns.tolist()
-                    if len(numeric_cols) > 0 and len(non_numeric_cols) > 0:
-                        st.markdown('<div class="card"><div class="card-title">📈 Chart</div></div>', unsafe_allow_html=True)
-                        try:
-                            chart_df = df.set_index(non_numeric_cols[0])[numeric_cols]
-                            st.bar_chart(chart_df, use_container_width=True)
-                        except Exception:
-                            pass
+                    st.download_button(
+                        label="⬇️ Download Results as CSV",
+                        data=df.to_csv(index=False),
+                        file_name="query_results.csv",
+                        mime="text/csv"
+                    )
 
-                with st.spinner("💡 Generating insight..."):
-                    insight = generate_insight(user_question, sql, df)
-                st.markdown(f'''
-                <div class="card">
-                    <div class="card-title">💡 AI Insight</div>
-                    <div class="insight-box">{insight}</div>
-                </div>
-                ''', unsafe_allow_html=True)
+                    if not df.empty:
+                        numeric_cols = df.select_dtypes(include='number').columns.tolist()
+                        non_numeric_cols = df.select_dtypes(exclude='number').columns.tolist()
+                        if len(numeric_cols) > 0 and len(non_numeric_cols) > 0:
+                            st.markdown('<div class="card"><div class="card-title">📈 Chart</div></div>', unsafe_allow_html=True)
+                            try:
+                                chart_df = df.set_index(non_numeric_cols[0])[numeric_cols]
+                                st.bar_chart(chart_df, use_container_width=True)
+                            except Exception:
+                                pass
 
-                st.session_state.history.append({
-                    "question": user_question,
-                    "sql": sql
-                })
+                    with st.spinner("💡 Generating insight..."):
+                        insight = generate_insight(user_question, sql, df)
+                    st.markdown(f'''
+                    <div class="card">
+                        <div class="card-title">💡 AI Insight</div>
+                        <div class="insight-box">{insight}</div>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+                    st.session_state.history.append({
+                        "question": user_question,
+                        "sql": sql
+                    })
 
 # Tab 2 — Explain SQL
 with tab2:
